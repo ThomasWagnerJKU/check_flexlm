@@ -1,0 +1,24 @@
+lmutil - Copyright (c) 1989-2019 Flexera. All Rights Reserved.
+Flexible License Manager status on Mon 9/28/2026 18:05
+
+License server status: 27000@licsrv
+    License file(s) on licsrv: /opt/flexlm/license.dat:
+
+    licsrv: license server UP (MASTER) v11.16.2
+
+Vendor daemon status (on licsrv):
+
+       MLM: UP v11.16.2
+Feature usage info:
+
+Users of solver:  (Total of 4 licenses issued;  Total of 1 license in use)
+
+Vendor daemon status (on licsrv):
+
+       cdslmd: UP v11.16.2
+Feature usage info:
+
+Users of solver:  (Total of 8 licenses issued;  Total of 2 licenses in use)
+
+Users of layout:  (Total of 2 licenses issued;  Total of 0 licenses in use)
+

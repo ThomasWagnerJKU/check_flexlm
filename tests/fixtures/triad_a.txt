@@ -1,0 +1,17 @@
+lmutil - Copyright (c) 1989-2019 Flexera. All Rights Reserved.
+Flexible License Manager status on Mon 9/28/2026 18:05
+
+License server status: 27000@lic1,27000@lic2,27000@lic3
+    License file(s) on lic1: /opt/flexlm/license.dat:
+
+      lic1: license server UP (MASTER) v11.16.2
+      lic2: license server UP v11.16.2
+      lic3: Cannot read data from license server system. (-16,287)
+
+Vendor daemon status (on lic1):
+
+     ansyslmd: UP v11.16.2
+Feature usage info:
+
+Users of acfd:  (Total of 25 licenses issued;  Total of 3 licenses in use)
+

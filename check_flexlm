@@ -1,0 +1,405 @@
+#!/usr/bin/python3
+# Nagios/Icinga plugin to check a FlexLM (FlexNet Publisher) license server with lmutil.
+#
+# Copyright (C) 2026 Thomas Wagner <thomas.wagner@jku.at>
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+import argparse
+import datetime
+import os
+import re
+import shlex
+import subprocess
+import sys
+
+OK = 0
+WARNING = 1
+CRITICAL = 2
+UNKNOWN = 3
+
+STATE_TEXT = {OK: "OK", WARNING: "WARNING", CRITICAL: "CRITICAL", UNKNOWN: "UNKNOWN"}
+
+VERSION = "0.1"
+DEFAULT_PORT = 27000
+DEFAULT_TIMEOUT = 30
+DEFAULT_WARNING = "30:"
+DEFAULT_CRITICAL = "7:"
+MAX_LISTED = 5
+
+MONTHS = {name: number for number, name in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+# separates the outputs of lmstat -a and lmstat -i in a single ssh call
+SEPARATOR = "=====check_flexlm====="
+
+USERS_RE = re.compile(r"^Users of (?P<feature>[^:\s]+):\s+\((?P<info>.*)\)\s*$")
+COUNTED_RE = re.compile(r"Total of (?P<issued>\d+) licenses? issued;\s+Total of (?P<used>\d+) licenses? in use")
+SERVER_UP_RE = re.compile(r"^\s*(?P<host>\S+): license server UP\b")
+DAEMON_RE = re.compile(r"^\s*(?P<vendor>[^\s:]+): (?P<status>.+?)\s*$")
+EXPIRY_RE = re.compile(r"^\s*\"(?P<feature>[^\"]+)\" v[^,]*, vendor: (?P<vendor>[^,\s]+),.*expiry: (?P<expiry>\S+)")
+DATE_RE = re.compile(r"\b(?P<day>\d{1,2})-(?P<month>[a-zA-Z]{3})-(?P<year>\d{1,4})\b")
+ERROR_RE = re.compile(r"\(-\d+,\d+")
+
+
+class PluginError(Exception):
+    def __init__(self, state, message):
+        super().__init__(message)
+        self.state = state
+        self.message = message
+
+
+class Range:
+    """Threshold range as defined by the monitoring plugins guidelines."""
+
+    def __init__(self, start, end, inside):
+        self.start = start
+        self.end = end
+        self.inside = inside
+        self.spec = self._normalized()
+
+    def _normalized(self):
+        """Threshold as perfdata carries it: graphers want a plain number, so one-sided ranges become their bound."""
+        if not self.inside and self.start == float("-inf") and self.end == float("inf"):
+            return ""
+        if not self.inside and self.end == float("inf"):
+            return format_number(self.start)
+        if not self.inside and self.start in (0, float("-inf")) and self.end != float("inf"):
+            return format_number(self.end)
+        low = "~" if self.start == float("-inf") else format_number(self.start)
+        high = "" if self.end == float("inf") else format_number(self.end)
+        return ("@" if self.inside else "") + "%s:%s" % (low, high)
+
+    @classmethod
+    def parse(cls, spec):
+        raw = spec
+        inside = spec.startswith("@")
+        if inside:
+            spec = spec[1:]
+
+        if ":" in spec:
+            low, high = spec.split(":", 1)
+        else:
+            low, high = "0", spec
+
+        try:
+            start = float("-inf") if low in ("~", "") else float(low)
+            end = float("inf") if high == "" else float(high)
+        except ValueError:
+            raise PluginError(UNKNOWN, "invalid threshold %r" % raw)
+
+        if start > end:
+            raise PluginError(UNKNOWN, "invalid threshold %r: start is above end" % raw)
+
+        return cls(start, end, inside)
+
+    def breached(self, value):
+        within = self.start <= value <= self.end
+        return within if self.inside else not within
+
+
+def format_number(value):
+    if isinstance(value, int) or float(value).is_integer():
+        return "%d" % value
+    return ("%.3f" % value).rstrip("0").rstrip(".")
+
+
+def perfdata(label, value, uom="", warn=None, crit=None, minimum=None, maximum=None):
+    fields = [
+        warn.spec if warn else "",
+        crit.spec if crit else "",
+        "" if minimum is None else format_number(minimum),
+        "" if maximum is None else format_number(maximum),
+    ]
+    while fields and fields[-1] == "":
+        fields.pop()
+    out = "%s=%s%s" % (label, format_number(value), uom)
+    if fields:
+        out += ";" + ";".join(fields)
+    return out
+
+
+def perfdata_label(label):
+    # quotes are doubled inside a quoted label, '=' separates label and value
+    return "'" + label.replace("'", "''").replace("=", "_") + "'"
+
+
+def parse_expiry(text):
+    """
+    The expiry date of a FlexLM date such as 31-dec-2026, or None for a
+    license that never expires: 'permanent' or the year 0.
+    """
+    if "permanent" in text.lower():
+        return None
+    match = DATE_RE.search(text)
+    if not match or match.group("month").lower() not in MONTHS:
+        raise ValueError("unknown expiry date %r" % text)
+    year = int(match.group("year"))
+    if year == 0:
+        return None
+    if year < 100:
+        # licenses from before FLEXlm 6 carry two digit years
+        year += 1900 if year >= 70 else 2000
+    return datetime.date(year, MONTHS[match.group("month").lower()], int(match.group("day")))
+
+
+class Status:
+    """What lmstat reports about a license server."""
+
+    def __init__(self):
+        self.servers_up = []
+        self.daemons = {}   # vendor -> status text, "UP ..." when running
+        self.features = []  # dicts with feature, vendor, issued, used; issued is None when uncounted
+        self.expiries = {}  # feature -> list of expiry dates, None for permanent
+        self.errors = []
+        self.expiry_table = False
+
+
+def parse_lmstat_a(text, status):
+    vendor = None
+    in_daemons = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if SERVER_UP_RE.match(line):
+            status.servers_up.append(SERVER_UP_RE.match(line).group("host"))
+            continue
+        if stripped.startswith("Vendor daemon status"):
+            in_daemons = True
+            continue
+        if stripped.startswith("Feature usage info"):
+            in_daemons = False
+            continue
+        if in_daemons:
+            match = DAEMON_RE.match(line)
+            if match:
+                vendor = match.group("vendor")
+                status.daemons[vendor] = match.group("status")
+            continue
+        match = USERS_RE.match(stripped)
+        if match:
+            counted = COUNTED_RE.search(match.group("info"))
+            status.features.append({
+                "feature": match.group("feature"), "vendor": vendor,
+                "issued": int(counted.group("issued")) if counted else None,
+                "used": int(counted.group("used")) if counted else None,
+            })
+            continue
+        match = EXPIRY_RE.match(line)
+        if match:
+            try:
+                status.expiries.setdefault(match.group("feature"), []).append(parse_expiry(match.group("expiry")))
+            except ValueError:
+                pass
+            continue
+        if ERROR_RE.search(stripped) or "Cannot connect" in stripped or "not running" in stripped:
+            status.errors.append(stripped)
+
+
+def parse_lmstat_i(text, status):
+    """The expiry dates of all features, from the table of lmstat -i."""
+    header = False
+    for line in text.splitlines():
+        tokens = line.split()
+        if not tokens:
+            continue
+        if tokens[0] == "Feature" and "Expires" in tokens:
+            header = True
+            status.expiry_table = True
+            continue
+        if not header or set(tokens[0]) == {"_"}:
+            continue
+        try:
+            expiry = parse_expiry(" ".join(tokens[3:]))
+        except ValueError:
+            continue
+        status.expiries.setdefault(tokens[0], []).append(expiry)
+
+
+def lmutil_command(args, option):
+    return [args.lmutil, "lmstat", option, "-c", args.license]
+
+
+def run(command, args, env=None):
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                universal_newlines=True, timeout=args.timeout, env=env)
+    except subprocess.TimeoutExpired:
+        raise PluginError(CRITICAL, "no answer from %s within %ss" % (args.license, format_number(args.timeout)))
+    except OSError as err:
+        raise PluginError(UNKNOWN, "cannot run %s: %s" % (command[0], err.strerror))
+    return result.returncode, result.stdout
+
+
+def query(args):
+    """Runs lmstat -a and lmstat -i, locally or with --ssh on another host, and returns both outputs."""
+    # lmutil's own connection timeout, in microseconds
+    flexlm_timeout = str(int(args.timeout * 1000000))
+    if args.ssh:
+        remote = " ".join([
+            "FLEXLM_TIMEOUT=" + flexlm_timeout,
+            " ".join(shlex.quote(part) for part in lmutil_command(args, "-a")), ";",
+            "echo", SEPARATOR, ";",
+            "FLEXLM_TIMEOUT=" + flexlm_timeout,
+            " ".join(shlex.quote(part) for part in lmutil_command(args, "-i")),
+        ])
+        command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % max(1, int(args.timeout)),
+                   args.ssh, remote]
+        returncode, output = run(command, args)
+        if SEPARATOR not in output:
+            lines = [line for line in output.splitlines() if line.strip()]
+            raise PluginError(UNKNOWN, "cannot run lmutil on %s: %s" % (
+                args.ssh, lines[0] if lines else "ssh exited with %d" % returncode))
+        text_a, text_i = output.split(SEPARATOR, 1)
+        return text_a, text_i
+
+    if not os.path.isfile(args.lmutil) or not os.access(args.lmutil, os.X_OK):
+        raise PluginError(UNKNOWN, "%s is not an executable file" % args.lmutil)
+    env = dict(os.environ, FLEXLM_TIMEOUT=flexlm_timeout)
+    _, text_a = run(lmutil_command(args, "-a"), args, env)
+    _, text_i = run(lmutil_command(args, "-i"), args, env)
+    return text_a, text_i
+
+
+def unique_labels(features):
+    """Perfdata labels: the feature name, prefixed with its vendor where two vendors share a name."""
+    names = [item["feature"] for item in features]
+    return [item["feature"] if names.count(item["feature"]) == 1 else "%s/%s" % (item["vendor"], item["feature"])
+            for item in features]
+
+
+def check(args, text_a, text_i, today):
+    status = Status()
+    parse_lmstat_a(text_a, status)
+    parse_lmstat_i(text_i, status)
+
+    if not status.servers_up:
+        reason = status.errors[0] if status.errors else next(
+            (line.strip() for line in text_a.splitlines() if line.strip() and "Copyright" not in line
+             and not line.startswith("Flexible License Manager")), "no answer")
+        raise PluginError(CRITICAL, "license server %s is down: %s" % (args.license, reason))
+
+    state = OK
+    problems = []
+
+    hosts = [part.split("@", 1)[-1] for part in re.split(r"[,:]", args.license) if part]
+    if len(hosts) > 1 and "," in args.license and len(status.servers_up) < len(hosts):
+        # a redundant triad keeps serving with two of three servers
+        state = WARNING
+        problems.append("only %d of %d license servers up" % (len(status.servers_up), len(hosts)))
+
+    down = sorted(vendor for vendor, text in status.daemons.items() if not text.startswith("UP"))
+    if down:
+        state = CRITICAL
+        problems += ["vendor daemon %s is down: %s" % (vendor, status.daemons[vendor]) for vendor in down]
+
+    if not status.features:
+        raise PluginError(UNKNOWN if not problems else CRITICAL,
+                          "; ".join(problems + ["license server %s reports no features" % args.license]))
+
+    # the earliest expiry of all features
+    dated = [(expiry, feature) for feature, expiries in status.expiries.items() for expiry in expiries if expiry]
+    days_left = None
+    if dated:
+        earliest, feature = min(dated)
+        days_left = (earliest - today).days
+        if args.critical and args.critical.breached(days_left):
+            expiry_state = CRITICAL
+        elif args.warning and args.warning.breached(days_left):
+            expiry_state = WARNING
+        else:
+            expiry_state = OK
+        soon = sorted({name for expiry, name in dated if expiry == earliest})
+        names = ", ".join(soon[:MAX_LISTED]) + (" and %d more" % (len(soon) - MAX_LISTED)
+                                                 if len(soon) > MAX_LISTED else "")
+        if days_left < 0:
+            expiry_text = "%s expired on %s, %d days ago" % (names, earliest.isoformat(), -days_left)
+        else:
+            expiry_text = "%s expire%s on %s, in %d days" % (names, "s" if len(soon) == 1 else "",
+                                                              earliest.isoformat(), days_left)
+        if expiry_state != OK:
+            problems.append(expiry_text)
+            state = max(state, expiry_state)
+    elif status.expiry_table or status.expiries:
+        expiry_text = "no feature expires"
+    else:
+        expiry_text = "expiry dates unknown"
+        state = max(state, UNKNOWN) if state == OK else state
+
+    counted = [item for item in status.features if item["issued"] is not None]
+    summary = "%d feature(s), %d of %d licenses in use" % (
+        len(status.features), sum(item["used"] for item in counted), sum(item["issued"] for item in counted))
+
+    message = ", ".join(problems) if problems else ""
+    message += (", " if message else "") + summary
+    if not problems or expiry_text not in problems:
+        message += ", " + expiry_text
+
+    perf = []
+    if days_left is not None:
+        perf.append(perfdata("days_left", days_left, "", args.warning, args.critical))
+    for label, item in zip(unique_labels(status.features), status.features):
+        if item["issued"] is not None:
+            perf.append(perfdata(perfdata_label(label), item["used"], "", minimum=0, maximum=item["issued"]))
+    return state, message, perf
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which Nagios reads as CRITICAL; exit UNKNOWN instead."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        sys.stderr.write("%s: error: %s\n" % (self.prog, message))
+        sys.exit(UNKNOWN)
+
+
+def build_parser():
+    parser = ArgumentParser(
+        prog="check_flexlm",
+        description="Nagios/Icinga plugin to check a FlexLM license server with lmutil: the license server and "
+                    "vendor daemons have to be up, the usage of every feature is reported as performance data, "
+                    "and the thresholds apply to the days until the earliest expiry of any feature.",
+        epilog="Thresholds take the monitoring plugins range format; as fewer days left are worse, use lower "
+               "bounds such as the defaults -w 30: -c 7:.")
+    parser.add_argument("-V", "--version", action="version", version="check_flexlm %s" % VERSION)
+    parser.add_argument("-l", "--lmutil", required=True, help="path of lmutil (on the --ssh host with --ssh)")
+    parser.add_argument("-H", "--hostname", required=True,
+                        help="license server; a comma separated list for a redundant triad")
+    parser.add_argument("-p", "--port", type=int, default=DEFAULT_PORT,
+                        help="port of lmgrd (default: %d)" % DEFAULT_PORT)
+    parser.add_argument("-w", "--warning", default=DEFAULT_WARNING,
+                        help="warning range for the days until the earliest expiry (default: %s)" % DEFAULT_WARNING)
+    parser.add_argument("-c", "--critical", default=DEFAULT_CRITICAL,
+                        help="critical range for the days until the earliest expiry (default: %s)"
+                             % DEFAULT_CRITICAL)
+    parser.add_argument("-t", "--timeout", type=float, default=DEFAULT_TIMEOUT,
+                        help="timeout in seconds for each lmutil call (default: %d)" % DEFAULT_TIMEOUT)
+    parser.add_argument("-s", "--ssh", metavar="[USER@]HOST",
+                        help="run lmutil on this host via ssh, typically the license server itself; -H is then "
+                             "resolved there, so -H localhost checks the server the ssh connection goes to")
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
+    args.license = ",".join("%d@%s" % (args.port, host.strip()) for host in args.hostname.split(",") if host.strip())
+
+    try:
+        args.warning = Range.parse(args.warning) if args.warning else None
+        args.critical = Range.parse(args.critical) if args.critical else None
+        text_a, text_i = query(args)
+        state, message, perf = check(args, text_a, text_i, datetime.date.today())
+    except PluginError as err:
+        print("FLEXLM %s - %s" % (STATE_TEXT[err.state], err.message))
+        return err.state
+
+    output = "FLEXLM %s - %s" % (STATE_TEXT[state], message)
+    if perf:
+        output += " | " + " ".join(perf)
+    print(output)
+    return state
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(UNKNOWN)

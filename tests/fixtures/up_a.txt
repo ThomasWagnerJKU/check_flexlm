@@ -1,0 +1,34 @@
+lmutil - Copyright (c) 1989-2019 Flexera. All Rights Reserved.
+Flexible License Manager status on Mon 9/28/2026 18:05
+
+[Detecting lmgrd processes...]
+License server status: 27000@licsrv
+    License file(s) on licsrv: /usr/local/flexlm/licenses/license.dat:
+
+    licsrv: license server UP (MASTER) v11.16.2
+
+Vendor daemon status (on licsrv):
+
+       MLM: UP v11.16.2
+Feature usage info:
+
+Users of MATLAB:  (Total of 10 licenses issued;  Total of 2 licenses in use)
+
+  "MATLAB" v44, vendor: MLM, expiry: 31-dec-2099
+  vendor_string: QQ
+  floating license
+
+    alice pc1 pc1 (v44) (licsrv/27000 101), start Mon 9/28 8:01
+    bob pc2 pc2 (v44) (licsrv/27000 202), start Mon 9/28 9:12
+
+Users of SIMULINK:  (Total of 5 licenses issued;  Total of 0 licenses in use)
+
+Users of Signal_Toolbox:  (Total of 1 license issued;  Total of 1 license in use)
+
+  "Signal_Toolbox" v44, vendor: MLM, expiry: 15-nov-2099
+  floating license
+
+    alice pc1 pc1 (v44) (licsrv/27000 303), start Mon 9/28 8:02
+
+Users of Compiler:  (Uncounted, node-locked)
+

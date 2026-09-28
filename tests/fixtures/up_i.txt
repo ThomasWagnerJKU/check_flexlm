@@ -1,0 +1,13 @@
+lmutil - Copyright (c) 1989-2019 Flexera. All Rights Reserved.
+Flexible License Manager status on Mon 9/28/2026 18:05
+
+NOTE: lmstat -i does not give information from the server,
+      but only reads the license file.  For this reason, 
+      lmstat -a is recommended instead.
+
+Feature                         Version     #licenses    Vendor        Expires
+_______                         _________   _________    ______        ________
+MATLAB                          44          10           MLM           31-dec-2099
+SIMULINK                        44          5            MLM           1-oct-2099
+Signal_Toolbox                  44          1            MLM           15-nov-2099
+Compiler                        44          uncounted    MLM           permanent(no expiration date)

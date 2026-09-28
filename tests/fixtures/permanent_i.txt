@@ -1,0 +1,9 @@
+lmutil - Copyright (c) 1989-2011 Flexera Software, Inc. All Rights Reserved.
+Flexible License Manager status on Mon 9/28/2026 18:05
+
+Feature                         Version     #licenses    Expires      Vendor
+_______                         _________   _________    __________   ______
+MATLAB                          44          10           1-jan-0      MLM
+SIMULINK                        44          5            permanent(no expiration date) MLM
+Signal_Toolbox                  44          1            1-jan-0      MLM
+Compiler                        44          uncounted    1-jan-0      MLM
