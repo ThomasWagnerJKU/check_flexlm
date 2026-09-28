@@ -85,7 +85,7 @@ and there is no maintained open implementation of it, so the plugin needs
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests
+python3 -m unittest -v
 ```
 
 The tests replay recorded lmstat output through a fake lmutil and a fake ssh.
