@@ -19,7 +19,7 @@ UNKNOWN = 3
 
 STATE_TEXT = {OK: "OK", WARNING: "WARNING", CRITICAL: "CRITICAL", UNKNOWN: "UNKNOWN"}
 
-VERSION = "0.1"
+VERSION = "0.2"
 DEFAULT_PORT = 27000
 DEFAULT_TIMEOUT = 30
 DEFAULT_WARNING = "30:"
@@ -30,7 +30,7 @@ MONTHS = {name: number for number, name in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
 
 # separates the outputs of lmstat -a and lmstat -i in a single ssh call
-SEPARATOR = "=====check_flexlm====="
+SEPARATOR = "=====check_flexlm_server====="
 
 USERS_RE = re.compile(r"^Users of (?P<feature>[^:\s]+):\s+\((?P<info>.*)\)\s*$")
 COUNTED_RE = re.compile(r"Total of (?P<issued>\d+) licenses? issued;\s+Total of (?P<used>\d+) licenses? in use")
@@ -353,13 +353,13 @@ class ArgumentParser(argparse.ArgumentParser):
 
 def build_parser():
     parser = ArgumentParser(
-        prog="check_flexlm",
+        prog="check_flexlm_server",
         description="Nagios/Icinga plugin to check a FlexLM license server with lmutil: the license server and "
                     "vendor daemons have to be up, the usage of every feature is reported as performance data, "
                     "and the thresholds apply to the days until the earliest expiry of any feature.",
         epilog="Thresholds take the monitoring plugins range format; as fewer days left are worse, use lower "
                "bounds such as the defaults -w 30: -c 7:.")
-    parser.add_argument("-V", "--version", action="version", version="check_flexlm %s" % VERSION)
+    parser.add_argument("-V", "--version", action="version", version="check_flexlm_server %s" % VERSION)
     parser.add_argument("-l", "--lmutil", required=True, help="path of lmutil (on the --ssh host with --ssh)")
     parser.add_argument("-H", "--hostname", required=True,
                         help="license server; a comma separated list for a redundant triad")

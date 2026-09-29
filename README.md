@@ -1,4 +1,4 @@
-# check_flexlm
+# check_flexlm_server
 
 A Nagios/Icinga plugin that checks a FlexLM (FlexNet Publisher) license server
 with Flexera's `lmutil`. Python 3.7 or newer, standard library only.
@@ -7,12 +7,17 @@ It checks that the license server and all vendor daemons are up, reports the
 usage of every feature as performance data, and alerts on the feature that
 expires first.
 
+It is not called `check_flexlm`, as the plugin of the monitoring-plugins
+collection by that name ships with Debian (`monitoring-plugins-standard`) and
+openSUSE (`monitoring-plugins-flexlm`). Up to version 0.1 this plugin was
+called `check_flexlm` itself.
+
 ## Usage
 
 ```sh
-check_flexlm -l /opt/flexlm/lmutil -H licsrv.example.com
-check_flexlm -l /opt/flexlm/lmutil -H lic1,lic2,lic3 -p 27000 -w 60: -c 14:
-check_flexlm -l /opt/flexlm/lmutil -H localhost -s monitor@licsrv.example.com
+check_flexlm_server -l /opt/flexlm/lmutil -H licsrv.example.com
+check_flexlm_server -l /opt/flexlm/lmutil -H lic1,lic2,lic3 -p 27000 -w 60: -c 14:
+check_flexlm_server -l /opt/flexlm/lmutil -H localhost -s monitor@licsrv.example.com
 ```
 
 ```
@@ -76,7 +81,7 @@ and there is no maintained open implementation of it, so the plugin needs
   instead of asking for a password or host key. The monitoring user needs key
   based access; restrict the key on the license server with
   `command=`/`restrict` in `authorized_keys` if you like.
-- **An agent on the license server**: run check_flexlm there via NRPE, the
+- **An agent on the license server**: run check_flexlm_server there via NRPE, the
   Icinga 2 agent or check_by_ssh, with a local `-l`.
 - **Liveness only**: `check_tcp` against the lmgrd port (27000) and the vendor
   daemon port (set with `VENDOR ... port=` in the license file) tells whether
